@@ -105,8 +105,14 @@ try:
     if d and os.path.isdir(d):
         import time as _t
         for x in sorted(os.listdir(d)):
-            sub = os.path.join(d, x, "db_storage")
-            if not os.path.isdir(sub):
+            # 兼容 db_storage 和 Msg 两种目录结构
+            sub1 = os.path.join(d, x, "db_storage")
+            sub2 = os.path.join(d, x, "Msg")
+            if os.path.isdir(sub1):
+                sub = sub1
+            elif os.path.isdir(sub2):
+                sub = sub2
+            else:
                 continue
             newest = max((os.path.getmtime(os.path.join(r, f))
                           for r, _, fs in os.walk(sub) for f in fs

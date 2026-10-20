@@ -477,16 +477,20 @@ def _zstd_decompress(zstd, content: bytes) -> Optional[str]:
 
 
 def _find_account_dirs(db_dir: str) -> List[str]:
-    """列出 db_dir 下所有含 db_storage 子目录的账号目录。
+    """列出 db_dir 下所有含 db_storage 或 Msg 子目录的账号目录。
 
     微信号目录不一定以 wxid_ 开头（如自定义微信号），这里只依赖
-    db_storage 子目录的存在性判断。
+    db_storage 或 Msg 子目录的存在性判断。
+    
+    微信 4.1.x 早期版本用 db_storage，4.1.x 后期版本改用 Msg。
     """
     out = []
     try:
         for name in os.listdir(db_dir):
-            p = os.path.join(db_dir, name, "db_storage")
-            if os.path.isdir(p):
+            # 兼容两种数据库目录结构
+            p1 = os.path.join(db_dir, name, "db_storage")
+            p2 = os.path.join(db_dir, name, "Msg")
+            if os.path.isdir(p1) or os.path.isdir(p2):
                 out.append(os.path.join(db_dir, name))
     except OSError:
         pass
@@ -522,14 +526,25 @@ class WeChatDB:
     # ------------------------------------------------------------------
     # 账号与数据库文件
     # ------------------------------------------------------------------
+    def _get_db_subdir(self, account_path: str) -> str:
+        """返回账号目录下的数据库子目录名（db_storage 或 Msg）"""
+        if os.path.isdir(os.path.join(account_path, "db_storage")):
+            return "db_storage"
+        elif os.path.isdir(os.path.join(account_path, "Msg")):
+            return "Msg"
+        else:
+            return "db_storage"  # 默认
+    
     def _pick_account(self) -> str:
         candidates = []
         for d in _find_account_dirs(self.db_dir):
-            if os.path.isdir(os.path.join(d, "db_storage")):
+            db_subdir = self._get_db_subdir(d)
+            db_path = os.path.join(d, db_subdir)
+            if os.path.isdir(db_path):
                 recent = max(
                     (
                         os.path.getmtime(os.path.join(root, f))
-                        for root, _, files in os.walk(os.path.join(d, "db_storage"))
+                        for root, _, files in os.walk(db_path)
                         for f in files
                         if f.endswith(".db") and not f.endswith("-wal")
                     ),
@@ -543,7 +558,8 @@ class WeChatDB:
 
     def _collect_db_files(self) -> List[Tuple[str, str, int]]:
         files = []
-        base = os.path.join(self.account_dir, "db_storage")
+        db_subdir = self._get_db_subdir(self.account_dir)
+        base = os.path.join(self.account_dir, db_subdir)
         for root, _, names in os.walk(base):
             # migrate 目录下的 unspportmsg.db 是微信保留的未支持消息库，
             # 进程内存中不存在对应密钥、代码从不访问，排除以免误触发密钥提取
@@ -1591,7 +1607,8 @@ class WeChatDB:
         性能：仅当 message 目录下的文件清单有变化（新增 message_5.db 等）或首次
         调用时才做全量重扫，否则直接复用 __init__ 时的扫描结果。
         """
-        msg_dir = os.path.join(self.account_dir, "db_storage", "message")
+        db_subdir = self._get_db_subdir(self.account_dir)
+        msg_dir = os.path.join(self.account_dir, db_subdir, "message")
         try:
             cur = sorted(
                 n for n in os.listdir(msg_dir)
@@ -2832,10 +2849,17 @@ def list_accounts(db_dir: Optional[str] = None) -> List[dict]:
         return []
     out = []
     for d in _find_account_dirs(db_dir):
+        # 兼容 db_storage 和 Msg 两种目录结构
+        if os.path.isdir(os.path.join(d, "db_storage")):
+            db_subdir = "db_storage"
+        elif os.path.isdir(os.path.join(d, "Msg")):
+            db_subdir = "Msg"
+        else:
+            continue
         recent = max(
             (
                 os.path.getmtime(os.path.join(root, f))
-                for root, _, files in os.walk(os.path.join(d, "db_storage"))
+                for root, _, files in os.walk(os.path.join(d, db_subdir))
                 for f in files
                 if f.endswith(".db") and not f.endswith("-wal")
             ),
@@ -3288,6 +3312,7 @@ def _locate_account_root(root: Optional[str]) -> Optional[str]:
             continue
         if any(
             os.path.isdir(os.path.join(cand, d, "db_storage"))
+            or os.path.isdir(os.path.join(cand, d, "Msg"))
             for d in dirs
         ):
             return cand
